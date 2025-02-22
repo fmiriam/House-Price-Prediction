@@ -1,0 +1,1048 @@
+---
+title: "Final_house_script"
+author: "Faith Mirriam Osoro"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+
+```{r}
+# -----------------------------------------------------
+# Load Required Packages
+# -----------------------------------------------------
+
+# Install and load pacman package for efficient package management
+#if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+library(pacman)
+
+# Core visualization packages
+library(kableExtra)   # Enhanced tables
+library(viridis)      # Color palettes
+library(ggplot2)      # Data visualization
+library(dplyr)
+
+# Load and install additional packages using pacman
+p_load(
+  tidyverse,    # Data manipulation and visualization
+  sf, sp, rgdal, # Spatial data handling
+  tmap, tmaptools, spgwr, # Thematic mapping and GWR analysis
+  grid, gridExtra, # Plot arrangements
+  spatialRF, randomForestExplainer, pdp, # Spatial Random Forests and partial dependence plots
+  gt, spdep, leaflet, leaflet.extras, # Spatial dependency and interactive maps
+  raster, INLA, GGally, geosphere, # Raster data, INLA models, correlation plots
+  RCurl, shiny, akima, mapview, randomForest # Web data, Shiny apps, interpolation, and Random Forest
+)
+
+
+
+```
+
+```{r}
+# -----------------------------------------------------
+# Data Import: Read Housing Dataset from GitHub
+# -----------------------------------------------------
+
+# Define URL of the dataset
+url <- "https://raw.githubusercontent.com/fmiriam/Housing/main/final_df_complete.csv"
+
+# Read the CSV file into a data frame using RCurl::getURL()
+house_df <- read.csv(text = RCurl::getURL(url))
+
+# -----------------------------------------------------
+# Basic Data Check
+# -----------------------------------------------------
+
+# Display frequency table of the 'house_type' column
+table(house_df$house_type)
+
+
+```
+
+## Data cleaning and Spatial boundery plot
+```{r}
+# -----------------------------------------------------
+# Data Cleaning: Coordinate and Location Fixes
+# -----------------------------------------------------
+
+# Check for missing values in longitude and latitude
+summary(house_df$longitude)
+summary(house_df$latitude)
+
+# Count the number of rows with missing coordinates
+num_missing <- sum(is.na(house_df$longitude) | is.na(house_df$latitude))
+print(paste("Number of rows with missing coordinates:", num_missing))
+
+# Drop records with "Redhill" as location
+house_df <- subset(house_df, location != "Redhill")
+
+# -----------------------------------------------------
+# Coordinate Corrections (Manual Fixes)
+# -----------------------------------------------------
+
+# Longitude corrections
+house_df$longitude[house_df$longitude == 367.721546] <- 36.7721546
+house_df$longitude[house_df$longitude == 1.1651] <- 36.7065
+house_df$longitude[house_df$longitude == 36.339201] <- 36.75267
+house_df$longitude[house_df$longitude == 36.337009] <- 36.76267
+
+# Latitude corrections
+house_df$latitude[house_df$latitude == 36.7065] <- 1.1651
+house_df$latitude[house_df$latitude == -1451913] <- -1.451913
+house_df$latitude[house_df$latitude == -1242146] <- -1.242146
+house_df$latitude[house_df$latitude == 1.286221] <- -1.286221
+house_df$latitude[house_df$latitude == 1.286865] <- -1.286865
+house_df$latitude[house_df$latitude == -0.324374] <- -1.324374
+house_df$latitude[house_df$latitude == 1.165] <- -1.165
+
+# -----------------------------------------------------
+# Spatial Boundary Plot: Nairobi Metropolitan
+# -----------------------------------------------------
+
+# Extract boundary from shapefile data
+boundary_data <- st_boundary(shapefile_data)
+
+# Subset to keep only the 'FIRST_SLNA' column
+shapefile_subset <- boundary_data["FIRST_SLNA"]
+
+# Plot the spatial boundary using ggplot2
+ggplot() +
+  geom_sf(data = shapefile_subset, color = 'blue', size = 1) +
+  theme_minimal() +
+  ggtitle('Nairobi Metropolitan')
+
+```
+## Reading Shapefile and Spatial Plotting
+
+```{r}
+# -----------------------------------------------------
+# Load Spatial Shapefile Data
+# -----------------------------------------------------
+
+# Read shapefile containing the Nairobi Metropolitan boundary
+shapefile_data <- st_read("metropolly.shp")
+
+# -----------------------------------------------------
+# Spatial Plot: House Prices in Nairobi Metropolitan
+# -----------------------------------------------------
+
+# Plot shapefile boundary and house locations
+ggplot() +
+  geom_sf(data = shapefile_data, color = 'black', size = 1) +                   # Plot boundary
+  geom_point(data = house_df, aes(x = longitude, y = latitude, color = price),  # Plot house locations with price coloring
+             size = 2) +
+  theme_minimal() +
+  ggtitle('Nairobi Metropolitan') +
+  scale_color_gradient(low = "blue", high = "red", name = "House Price")  # Color scale for house prices
+
+
+```
+
+```{r}
+# Check for missing values in 'longitude' and 'latitude'
+house_prices <- house_df %>%
+  filter(!is.na(longitude) & !is.na(latitude))
+
+# Create an sf object from the CSV file
+house_prices_sf <- house_prices %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(shapefile_subset))
+```
+
+```{r}
+# Create a leaflet map
+map <- leaflet() %>%
+  # Add OpenStreetMap tiles as basemap
+  addTiles() %>%
+  # Add house locations as circles
+  addCircleMarkers(data = house_df, ~longitude, ~latitude,
+                   fillOpacity = 0.5,
+                   radius = 5,
+                   color = "blue",
+                   stroke = FALSE,
+                   popup = ~location)
+
+# Print the map
+map
+```
+
+
+```{r}
+# -----------------------------------------------------
+# Basic Data Inspection and Structure
+# -----------------------------------------------------
+
+# View the first few rows of the dataset
+head(house_df)
+
+# Summary statistics for numerical variables
+summary(house_df)
+
+# Structure of the dataframe (column names, data types)
+str(house_df)
+
+# Get the dimensions (number of rows and columns) of the dataframe
+shape <- dim(house_df)
+print(paste("Number of rows:", shape[1]))
+print(paste("Number of columns:", shape[2]))
+```
+
+```{r}
+# -----------------------------------------------------
+# Categorical Variables: House Type
+# -----------------------------------------------------
+
+# Frequency table of house types
+table(house_df$house_type)
+
+# Replace values in the "house_type" column for consistency
+house_df <- house_df %>%
+  mutate(house_type = case_when(
+    house_type == "Apartments" ~ "apartment",
+    house_type == "Townhouse" ~ "townhouse",
+    TRUE ~ house_type  # Keep other values as is
+  ))
+
+# Verify replacement
+table(house_df$house_type)
+```
+
+```{r}
+# -----------------------------------------------------
+# Categorical Variables: Location
+# -----------------------------------------------------
+
+# Frequency table of locations
+table(house_df$location)
+
+# Unique location names
+print(unique(house_df$location))
+
+```
+```{r}
+# -----------------------------------------------------
+# Data Transformation: Categorize Area Type Based on Location
+# -----------------------------------------------------
+
+# Create a new column 'area_type' based on location categories
+house_df <- house_df %>%
+  mutate(area_type = case_when(
+    location %in% c("Kyuna", "Runda", "Muthaiga", "Karen") ~ "high end",
+    location %in% c("Westlands", "Kilimani", "Kileleshwa", "Lavington", "Parklands", 
+                    "New Runda", "Kitisuru", "Hurlingham", "Spring Valley", "Loresho", 
+                    "Upper Hill", "Gigiri", "Riverside", "Syokimau", "Kitengela", 
+                    "South C", "Nairobi CBD", "Dagoretti", "Ngong Road", "Garden Estate", 
+                    "Lang'ata", "Kiambu Road", "Ruaka", "Lower Kabete", "Riruta", 
+                    "Thome", "ISouth B", "Madaraka") ~ "middle",
+    location %in% c("Kangemi", "Ongata Rongai", "Eastleigh", "Mlolongo", "Uthiru", 
+                    "Embakasi", "Ngong", "Utawala", "Katani", "Komarock", "Kiserian", 
+                    "Joska") ~ "lower",
+    TRUE ~ "middle" # Default category for any other locations
+  ))
+
+# Verify the new 'area_type' column
+table(house_df$area_type)
+
+```
+
+
+```{r}
+# -----------------------------------------------------
+# Exploratory Data Analysis (EDA) Using Facet Wrap
+# -----------------------------------------------------
+
+house_df_long <- house_df %>%
+  dplyr::select(bedrooms, bathrooms, size, price) %>%  # Explicit namespace
+  tidyr::pivot_longer(cols = everything(), names_to = "variable", values_to = "value")
+
+
+# Histogram with facets
+ggplot(house_df_long, aes(x = value)) +
+  geom_histogram(fill = "skyblue", color = "black", bins = 30) +
+  facet_wrap(~ variable, scales = "free") +  # Facet by variable with free scales
+  labs(x = "Value", y = "Frequency", title = "Distribution of Key Variables") +
+  scale_x_continuous(labels = scales::comma) +  # Format x-axis labels with commas
+  theme_minimal()
+
+# -----------------------------------------------------
+
+# Boxplot with facets
+ggplot(house_df_long, aes(y = value)) +
+  geom_boxplot(fill = "lightblue", color = "blue") +
+  facet_wrap(~ variable, scales = "free") +  # Facet by variable with free scales
+  labs(y = "Value", title = "Boxplots of Key Variables") +
+  scale_y_continuous(labels = scales::comma) +  # Format y-axis labels with commas
+  theme_minimal()
+
+```
+
+## **Summary of Boxplots for Key Variables**
+
+The boxplots provide insights into the distribution and presence of outliers for the key variables: **bathrooms**, **bedrooms**, **price**, and **size**. 
+
+### **1. Bathrooms**
+- **Median:** Approximately 3 bathrooms  
+- **Interquartile Range (IQR):** Between 2 and 4 bathrooms  
+- **Outliers:** Some houses have more than 6 bathrooms, with a maximum outlier around 10 bathrooms  
+
+### **2. Bedrooms**
+- **Median:** Approximately 3 bedrooms  
+- **IQR:** Between 2 and 4 bedrooms  
+- **Outliers:** A few houses with more than 6 bedrooms  
+
+### **3. Price (KES)**
+- **Median:** The median price is relatively low compared to the overall range  
+- **IQR:** Most houses are priced under 50 million KES  
+- **Outliers:** Significant outliers above 50 million KES, suggesting high-end luxury properties  
+
+### **4. Size (Square Meters)**
+- **Median:** Around 150-200 sqm  
+- **IQR:** Between 100 and 300 sqm  
+- **Outliers:** Multiple houses with sizes greater than 400 sqm, reaching up to 600 sqm  
+
+---
+
+## **Overall Observations**
+- All variables exhibit **right-skewed distributions**, especially **price** and **size**  
+- **Price** and **size** have a large number of outliers, indicating a few properties with very high values compared to the majority  
+- **Bathrooms** and **bedrooms** have relatively smaller IQRs, showing less variation  
+
+---
+
+💡 **Interpretation Note:**  
+These boxplots and summary statistics highlight the presence of extreme values, which may need to be considered during modeling and analysis. For example, the right skew in **price** might indicate that a log transformation could improve model performance.  
+
+```{r}
+# -----------------------------------------------------
+# Boxplot: House Prices Across Different Area Types
+# -----------------------------------------------------
+
+ggplot(house_df, aes(x = area_type, y = price)) +
+  geom_boxplot(fill = "lightblue", color = "blue") +
+  scale_y_continuous(labels = scales::comma) +  # Format y-axis labels with commas
+  labs(x = "Area Type", y = "Price (KES)", title = "House Prices Across Area Types") +
+  theme_minimal()
+
+```
+## **Summary: House Prices Across Area Types**
+
+The boxplot illustrates the distribution of house prices in different area types: **high end**, **lower**, and **middle**. Here’s a quick summary of the insights:  
+
+---
+
+### **1. High-End Areas** 🏡💎
+- **Median Price:** Around 75 million KES  
+- **Interquartile Range (IQR):** Approximately 50 million to 100 million KES  
+- **Range:** Prices extend up to around 150 million KES, with no significant outliers  
+- **Interpretation:** High-end areas have the highest property prices, with a wider range of values compared to other categories  
+
+---
+
+### **2. Lower-End Areas** 🏡💰
+- **Median Price:** Around 5 million KES  
+- **IQR:** Approximately 3 million to 10 million KES  
+- **Outliers:** Several properties exceed the upper whisker, indicating a few high-priced properties compared to the majority  
+- **Interpretation:** Lower-end areas have more affordable properties, but some high-value properties exist as outliers  
+
+---
+
+### **3. Middle-Class Areas** 🏡📈
+- **Median Price:** Around 10 million KES  
+- **IQR:** Approximately 5 million to 20 million KES  
+- **Outliers:** Several properties are priced above the upper whisker, though fewer than in the lower category  
+- **Interpretation:** Middle-class areas have moderately priced properties, with fewer extreme outliers compared to lower-end areas  
+
+---
+
+### 💡 **Overall Observations**
+- Property prices increase significantly from **lower** to **middle** to **high-end** areas  
+- **High-end areas** have a broader range and higher median price compared to other categories  
+- Both **lower** and **middle** areas exhibit outliers, indicating some high-value properties within these categories  
+- The difference in median prices between area types is substantial, confirming that location plays a crucial role in property pricing
+
+---
+
+# -----------------------------------------------------
+# Normality Test: Shapiro-Wilk Test
+# -----------------------------------------------------
+```{r}
+# Perform Shapiro-Wilk test for normality
+shapiro.test(house_df$price)
+
+# -----------------------------------------------------
+# Visualization: Histogram of Price Distribution
+# -----------------------------------------------------
+
+ggplot(house_df, aes(x = price)) +
+  geom_histogram(fill = "skyblue", color = "black", bins = 20) +
+  scale_x_continuous(labels = scales::comma) +  # Format x-axis labels with commas
+  labs(x = "Price (KES)", y = "Frequency", title = "Histogram of House Prices") +
+  theme_minimal()
+
+```
+```{r}
+# -----------------------------------------------------
+# Covariates: Significance with Target Variable
+# -----------------------------------------------------
+
+# Select relevant columns
+df <- house_df %>%
+  dplyr::select(area_type, house_type, price) %>%
+  na.omit()  # Remove rows with missing values
+
+# Number of bootstrap iterations
+n_bootstrap <- 1000
+
+# Initialize data frame to store results
+selected_vars_overall_df <- data.frame(
+  Variable = character(),
+  chi_squared = numeric(),
+  df = numeric(),
+  p_value = numeric(),
+  SE = numeric(),  # Standard Error from bootstrapped statistics
+  stringsAsFactors = FALSE
+)
+
+# -----------------------------------------------------
+# Loop through each categorical variable and test significance with 'price'
+# -----------------------------------------------------
+
+for (var in names(df)[-3]) {  # Exclude 'price' column
+  
+  # Perform Kruskal-Wallis test between 'price' and current variable
+  corr_overall1 <- kruskal.test(df$price ~ df[[var]])
+  
+  # Skip if p-value is NA
+  if (is.na(corr_overall1$p.value)) next
+  
+  # Check if p-value is significant (p < 0.05)
+  if (corr_overall1$p.value < 0.05) {
+    # Bootstrap resampling
+    boot_chi_squared <- numeric(n_bootstrap)
+    for (i in 1:n_bootstrap) {
+      resampled_data <- df[sample(nrow(df), replace = TRUE), ]
+      boot_corr <- kruskal.test(resampled_data$price ~ resampled_data[[var]])
+      boot_chi_squared[i] <- boot_corr$statistic
+    }
+    
+    # Calculate standard error (SE) from bootstrapped chi-squared statistics
+    se <- sd(boot_chi_squared)
+    
+    # Append results to the dataframe
+    selected_vars_overall_df <- rbind(
+      selected_vars_overall_df,
+      data.frame(
+        Variable = var,
+        chi_squared = corr_overall1$statistic,
+        df = corr_overall1$parameter,
+        SE = se,
+        p_value = corr_overall1$p.value,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+}
+
+# -----------------------------------------------------
+# Display Results:
+# -----------------------------------------------------
+
+# Sort by chi-squared statistic (descending order)
+sorted_data_overall1 <- selected_vars_overall_df[order(selected_vars_overall_df$chi_squared, decreasing = TRUE), ]
+
+# Print the table using gt with a caption
+gt(sorted_data_overall1, caption = "Selected Significant Categorical Variables (≥ 3 Levels)")
+
+```
+## **Covariates: Significance with Target Variable**
+
+The table  presents the categorical variables that show a significant association with the target variable **price** based on the **Kruskal-Wallis test** with bootstrapped standard errors:
+
+---
+
+---
+
+### **Interpretation**
+1. **house_type**
+- **Chi-Squared:** 283.5417, **df:** 5, **p-value:** 3.45 × 10⁻⁵⁹  
+- The p-value is extremely small, indicating a **highly significant** relationship between house type and price.  
+- The large chi-squared value suggests substantial variation in prices across different house types.  
+
+2. **area_type**
+- **Chi-Squared:** 155.9456, **df:** 2, **p-value:** 1.37 × 10⁻³⁴  
+- The p-value is also extremely small, confirming a **significant** relationship between area type and price.  
+- With a lower chi-squared value compared to house type, the effect of area type on price is smaller but still substantial.  
+
+---
+
+### **Overall Conclusion**
+- Both **house_type** and **area_type** are significantly associated with **house prices**.  
+- The low p-values suggest that the differences in house prices between categories within each variable are unlikely to be due to chance.  
+- The **standard error (SE)** values from bootstrapping provide robust estimates of variability, ensuring the reliability of these significance results.
+
+---
+
+```{r}
+# Initialize data frame to store results
+selected_vars_overall2_df <- data.frame(
+  Variable = character(),
+  W = numeric(),
+  SE = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each independent variable
+for (var in names(my_df)[-1]) {
+  # Perform the Wilcoxon rank-sum test
+  wilcox1 <- wilcox.test(my_df$price ~ my_df[, var], exact = FALSE, paired = FALSE, na.rm = TRUE)
+  
+  # Perform bootstrapping
+  boot_W <- numeric(n_bootstrap)
+  for (i in 1:n_bootstrap) {
+    # Resample the data with replacement
+    resampled_data <- my_df[sample(nrow(my_df), replace = TRUE), ]
+    # Perform Wilcoxon rank-sum test on resampled data
+    boot_W[i] <- wilcox.test(resampled_data$price ~ resampled_data[, var], exact = FALSE, paired = FALSE, na.rm = TRUE)$statistic
+  }
+  
+  # Calculate standard error from bootstrapped statistics
+  se <- sd(boot_W)
+  
+  # Add the variable and its results to the data frame
+  selected_vars_overall2_df <- rbind(
+    selected_vars_overall2_df,
+    data.frame(
+      Variable = var,
+      W = wilcox1$statistic,
+      SE = se,
+      p_value = wilcox1$p.value,
+      stringsAsFactors = FALSE
+    )
+  )
+}
+
+# Sort the dataframe based on the Wilcoxon statistic
+sorted_overall_data2 <- selected_vars_overall2_df[order(selected_vars_overall2_df$W, decreasing = TRUE),]
+
+# Print the table
+gt(sorted_overall_data2, caption = "Selected numerical variables")
+
+
+```
+## **Numerical Variables: Wilcoxon Rank-Sum Test Results**
+
+
+### **Interpretation**
+1. **gym**  
+- **W:** 1,181,610.0, **p-value:** 0.1759  
+- The p-value is greater than 0.05, indicating **no significant** association between the presence of a gym and house prices.  
+
+2. **swimming_pool** 🏊  
+- **W:** 926,442.5, **p-value:** 2.05 × 10⁻⁴¹  
+- The extremely small p-value indicates a **highly significant** relationship between having a swimming pool and higher house prices.  
+- The large **W** value suggests a **strong effect** of this variable.  
+
+3. **generator** ⚡  
+- **W:** 921,531.5, **p-value:** 0.1616  
+- The p-value is greater than 0.05, indicating **no significant** association between the presence of a generator and house prices.  
+
+4. **borehole** 💧  
+- **W:** 495,693.0, **p-value:** 1.79 × 10⁻⁵  
+- The very small p-value indicates a **significant** association between having a borehole and higher house prices.  
+
+5. **staff_quarters** 🏡  
+- **W:** 309,234.5, **p-value:** 8.16 × 10⁻³⁰  
+- The extremely small p-value indicates a **highly significant** association between having staff quarters and higher house prices.  
+
+---
+
+### 💡 **Overall Conclusion**
+- Among the five variables, **swimming_pool**, **borehole**, and **staff_quarters** show **statistically significant** associations with house prices (**p < 0.05**).  
+- The variables **gym** and **generator** are **not significant** predictors of house prices, as their p-values are above the significance threshold.  
+- The **W** statistic reflects the magnitude of the difference, with **gym** having the highest W value but without reaching statistical significance.  
+- The **standard error (SE)** values from bootstrapping indicate the variability of the W statistic, supporting the robustness of these results.  
+
+---
+
+
+
+```{r}
+# Select relevant columns
+my_df3_cor <- house_df %>% 
+  dplyr::select(price, size, bedrooms, bathrooms)
+
+# Remove rows with missing values
+my_df3_cor <- my_df3_cor[complete.cases(my_df3_cor),]
+
+# Number of bootstrap iterations
+n_bootstrap <- 1000
+
+# Create an empty data frame to store the selected variables
+selected_vars_overal_cases_df1 <- data.frame(
+  Variable = character(),
+  Speakman = numeric(),
+  p_value = numeric(),
+  SE = numeric(),  # Placeholder for standard error
+  stringsAsFactors = FALSE
+)
+
+# Loop through each independent variable
+for (var in names(my_df3_cor)[-1]) {
+  # Perform the Spearman correlation test
+  corr_overal_cases2 <- cor.test(my_df3_cor[, var], my_df3_cor$price, method = "spearman", exact = FALSE, na.rm = TRUE)
+  
+  # Check if the p-value is NA
+  if (is.na(corr_overal_cases2$p.value)) next
+  
+  # Perform bootstrapping
+  boot_corr <- numeric(n_bootstrap)
+  for (i in 1:n_bootstrap) {
+    # Resample the data with replacement
+    resampled_data <- my_df3_cor[sample(nrow(my_df3_cor), replace = TRUE), ]
+    # Perform Spearman correlation test on resampled data
+    boot_corr[i] <- cor.test(resampled_data[, var], resampled_data$price, method = "spearman", exact = FALSE, na.rm = TRUE)$estimate
+  }
+  
+  # Calculate standard error from bootstrapped statistics
+  se <- sd(boot_corr)
+  
+  # Check if the correlation is significant (p-value < 0.05)
+  if (corr_overal_cases2$p.value < 0.05) {
+    # If significant, add the variable and its correlation coefficient, p-value, and standard error to the data frame
+    selected_vars_overal_cases_df1 <- rbind(
+      selected_vars_overal_cases_df1,
+      data.frame(
+        Variable = var,
+        Speakman = corr_overal_cases2$estimate,
+        SE = se,
+        p_value = corr_overal_cases2$p.value,
+        
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+}
+
+# Print the table using gt
+gt(selected_vars_overal_cases_df1, caption = "Selected significant numerical variables with standard errors")
+```
+
+### **Interpretation**
+1. **size** 📏  
+- **Spearman Correlation:** 0.6127, **p-value:** 0.0000  
+- The positive correlation of **0.61** indicates a **strong positive** relationship between house size and price.  
+- The p-value of **0.0000** suggests that this correlation is **highly significant**.  
+
+2. **bedrooms** 🛏️  
+- **Spearman Correlation:** 0.6135, **p-value:** 0.0000  
+- The positive correlation of **0.61** indicates a **strong positive** relationship between the number of bedrooms and price.  
+- The very small p-value confirms that this correlation is **highly significant**.  
+
+3. **bathrooms** 🚿  
+- **Spearman Correlation:** 0.5727, **p-value:** 9.61 × 10⁻²⁷⁹  
+- The positive correlation of **0.57** indicates a **moderately strong positive** relationship between the number of bathrooms and price.  
+- The extremely small p-value confirms that this correlation is also **highly significant**.  
+
+---
+
+### 💡 **Overall Conclusion on variable significance **
+- All three variables (**size**, **bedrooms**, and **bathrooms**) show **significant positive correlations** with house prices (**p < 0.05**).  
+- The strength of the correlations is **strong** for **size** and **bedrooms** and **moderately strong** for **bathrooms**.  
+- The **standard error (SE)** values obtained from bootstrapping indicate the variability of the correlation estimates, with relatively low SE values reflecting the robustness of these correlations.  
+
+---
+
+## **Spatial Autocorrelation and Label Encoding**
+
+This section examines the spatial autocorrelation of house prices using **Moran's I** statistic and encodes categorical variables for subsequent modeling.
+
+---
+
+### **1. Spatial Autocorrelation: Moran's I Statistic**
+
+```{r}
+# -----------------------------------------------------
+# Drop rows with missing or infinite values in longitude and latitude
+# -----------------------------------------------------
+# Remove rows with missing price values
+house_df <- house_df[!is.na(house_df$price), ]
+
+
+# Remove rows with missing or infinite values
+house_df_cords <- house_df[complete.cases(house_df[, c("longitude", "latitude", "price")]), ]
+
+
+# Convert cleaned longitude and latitude to spatial coordinates
+coords <- house_df_cords[, c("longitude", "latitude")]
+
+# -----------------------------------------------------
+# Create Spatial Weights Matrix using K-Nearest Neighbors
+# -----------------------------------------------------
+k <- 5  # Number of nearest neighbors
+w <- knn2nb(knearneigh(coords, k = k))
+
+# Convert to binary weights
+w <- nb2listw(w, style = "B")
+
+# -----------------------------------------------------
+# Calculate Moran's I Statistic
+# -----------------------------------------------------
+mi <- moran.mc(house_df$price, listw = w, nsim = 999)
+
+# Print Moran's I statistic
+cat("Moran's I statistic:", mi$statistic, "\n")
+
+# Print Moran's I p-value
+cat("P-value:", mi$p.value, "\n")
+```
+```{r}
+# Jitter coordinates to remove identical points
+coords <- house_df_cords[, c("longitude", "latitude")]
+coords$longitude <- jitter(coords$longitude, amount = 0.0001)
+coords$latitude <- jitter(coords$latitude, amount = 0.0001)
+
+# Recalculate spatial weights matrix
+k <- 5
+w <- knn2nb(knearneigh(coords, k = k))
+w <- nb2listw(w, style = "B")
+
+# Calculate Moran's I
+mi <- moran.mc(house_df_cords$price, listw = w, nsim = 999)
+cat("Moran's I statistic:", mi$statistic, "\n")
+cat("P-value:", mi$p.value, "\n")
+
+```
+## **Interpretation of Moran's I**
+
+### **1. Value: 0.441172**
+- The value of **0.44** indicates **moderate positive spatial autocorrelation**, meaning that houses located near each other tend to have **similar prices**.  
+- A value closer to **1** would indicate **strong** spatial autocorrelation, while a value near **0** would suggest **little to no** spatial autocorrelation.  
+
+---
+
+### **2. P-value: 0.001**
+- The low **p-value** of **0.001** is **statistically significant** at the **0.05** level.  
+- This means that the observed spatial autocorrelation is **unlikely** to be due to chance.  
+- The Moran's I statistic slightly **decreased** from **0.4514** to **0.4412** after jittering the coordinates.  
+- This **minor reduction** is expected since jittering introduces small random noise to resolve **identical points**, reducing the strength of **local spatial clusters**.  
+- The **p-value** remains the same (**0.001**), confirming that the spatial autocorrelation is still **statistically significant**.  
+
+---
+
+
+- The results confirm that **house prices** exhibit **moderate positive spatial autocorrelation**.  
+- This suggests that **spatial factors** should be included in subsequent **machine learning models** to capture the influence of **location** on **house prices**.  
+- The slight reduction in Moran’s I after **jittering** is acceptable, as it ensures a **valid spatial weights matrix** without **identical point** issues.  
+
+---
+
+
+```{r}
+# Perform label encoding for "house_type" and "area_type"
+house_df$house_type_encoded <- as.integer(factor(house_df$house_type))
+house_df$area_type_encoded <- as.integer(factor(house_df$area_type))
+
+# Remove original categorical variables
+house_df <- subset(house_df, select = -c(house_type, area_type))
+
+# Convert tibble to dataframe
+df <- as.data.frame(house_df)
+
+# Extract coordinates from dataframe
+coordinates <- df[, c("longitude", "latitude")]
+
+# Create matrix of coordinates
+coord_matrix <- cbind(coordinates$longitude, coordinates$latitude)
+
+# Create SpatialPoints object
+spatial_points <- SpatialPoints(coords = coord_matrix)
+
+# Create SpatialPointsDataFrame
+spatial_df <- SpatialPointsDataFrame(coords = spatial_points, data = df)
+
+# Check the structure of the spatial object
+str(spatial_df)
+
+# Create spatial weights matrix using distance-based weights
+w <- dnearneigh(coordinates(spatial_df), 0, 5)  # 0 indicates that self-neighbors are not included
+w <- nb2listw(w, style = "B")
+
+```
+## SPATIAL AUTO REGRESSEION(SAR)
+
+```{r}
+library(spatialreg)
+
+# -----------------------------------------------------
+# Fit SAR Model (Spatial Lag Model)
+# -----------------------------------------------------
+sar_model <- errorsarlm(price ~ swimming_pool + bedrooms + borehole + 
+                        staff_quarters + bathrooms + house_type_encoded + 
+                        size + area_type_encoded, 
+                        data = spatial_df, listw = w)
+
+# -----------------------------------------------------
+# Display Model Summary
+# -----------------------------------------------------
+summary(sar_model)
+
+```
+
+- The **SAR model** confirms that both **spatial dependence** and **predictor variables** significantly influence **house prices**.  
+- The **negative lambda** indicates that **spatial competition effects** are present, suggesting that high prices in one area may lead to **lower prices** in neighboring areas.  
+- The model outperforms a standard **linear regression** model, as evidenced by the **lower AIC** and the significance of the **spatial coefficient (Lambda)**.  
+- These results highlight the importance of incorporating **spatial factors** when modeling **house prices**.
+
+## GEOGRAPHIC WEIGHTED REGRESSION
+
+```{r}
+library(GWmodel)
+bw <- bw.gwr(formula = price ~ swimming_pool + bedrooms + borehole + staff_quarters + bathrooms + house_type_encoded +
+               size + area_type_encoded, 
+             approach = "AIC",
+             adaptive = T,
+             data = spatial_df)
+# fit the GWR model
+gwr.mod <- gwr.basic(formula = price ~ swimming_pool + bedrooms + borehole + staff_quarters + bathrooms +
+                       house_type_encoded + size + area_type_encoded,
+                     adaptive = T,
+                     data = spatial_df, 
+                     bw = bw)  
+
+gwr.mod
+```
+```{r}
+# Perform stepwise regression
+step_model <- step(lm(price ~ swimming_pool + bedrooms + borehole + staff_quarters + bathrooms +
+                       house_type_encoded + size + area_type_encoded, data = spatial_df),
+                   direction = "both", # "both" means both forward and backward stepwise selection
+                   trace = FALSE) # Set trace to TRUE to see the steps taken in the selection process
+
+# Get the formula for the selected model
+selected_formula <- formula(step_model)
+
+# Use the selected formula to fit the GWR model
+bw <- bw.gwr(formula = selected_formula,
+              approach = "AIC",
+              adaptive = TRUE,
+              data = spatial_df)
+
+# Fit the GWR model with the selected formula
+gwr_mod <- gwr.basic(formula = selected_formula,
+                     adaptive = TRUE,
+                     data = spatial_df, 
+                     bw = bw)
+
+
+gwr_mod
+```
+
+# -----------------------------------------------------
+# Spatial Random Forest (RF Spatial) Model
+# -----------------------------------------------------
+
+```{r}
+# -----------------------------------------------------
+# 1. Data Splitting
+# -----------------------------------------------------
+
+set.seed(123)  # Set seed for reproducibility
+
+# Split the dataset into training (80%) and testing (20%) sets
+train_index <- sample(1:nrow(house_df), 0.8 * nrow(house_df))
+train_data <- house_df[train_index, ]   # Training data
+test_data <- house_df[-train_index, ]   # Testing data
+
+# -----------------------------------------------------
+# 2. Spatial Distance Matrix
+# -----------------------------------------------------
+
+# Extract longitude and latitude for training data
+lon_train <- train_data$longitude
+lat_train <- train_data$latitude
+
+# Create a distance matrix using the Haversine formula (great-circle distance)
+distance.matrix_train <- distm(cbind(lon_train, lat_train), fun = distHaversine)
+
+# Define spatial distance thresholds (used by RF Spatial for spatial weighting)
+distance.thresholds <- c(0, 10, 15, 20, 30)
+
+# -----------------------------------------------------
+# 3. Define Response and Predictor Variables
+# -----------------------------------------------------
+
+# Name of the dependent variable (response variable)
+dependent.variable.name <- "price"
+
+# Names of predictor variables (features)
+predictor.variable.names <- c("swimming_pool", "bedrooms", "borehole", 
+                              "staff_quarters", "bathrooms", "house_type_encoded", 
+                              "size", "area_type_encoded")
+
+# -----------------------------------------------------
+# 4. Train the Spatial Random Forest Model
+# -----------------------------------------------------
+
+# Fit the Spatial Random Forest model using the "hengl" method
+model <- rf_spatial(
+  data = train_data,                           # Training dataset
+  dependent.variable.name = dependent.variable.name,  # Target variable
+  predictor.variable.names = predictor.variable.names,  # Predictor variables
+  distance.matrix = distance.matrix_train,     # Spatial distance matrix
+  distance.thresholds = distance.thresholds,   # Spatial distance thresholds
+  method = "hengl",                            # Method by Hengl et al.
+  n.cores = 2                                  # Number of CPU cores for parallel processing
+)
+
+
+
+```
+```{r}
+model
+```
+- The **Spatial Random Forest** model effectively captures both **spatial dependencies** and **predictor effects**, resulting in a **high correlation (91%)** between **predicted** and **observed** prices.  
+- The model’s performance is **significantly better** than a standard **Random Forest** due to the incorporation of **spatial features** (as indicated by the **higher R-Squared** and **lower RMSE**).  
+- With an **82.8%** explanation of variance on the **test set**, the model is well-suited for predicting **house prices** where **location** and **spatial proximity** are crucial factors.
+
+```{r}
+# Extract longitude and latitude for testing data
+lon_test <- test_data$longitude
+lat_test <- test_data$latitude
+
+# Combine training and testing coordinates
+combined_coords <- rbind(cbind(lon_train, lat_train), cbind(lon_test, lat_test))
+
+# Calculate combined distance matrix (training and test points)
+distance.matrix_combined <- distm(combined_coords, fun = distHaversine)
+
+# Select predictor variables and dependent variable for training and testing datasets
+required_columns <- c(predictor.variable.names, dependent.variable.name)
+train_data <- train_data[, required_columns]
+
+# Ensure that all predictor variables are present in test_data
+test_data <- test_data[, predictor.variable.names]
+
+```
+
+
+
+```{r}
+library(writexl)
+
+# Save to Excel
+write_csv(train_data, "train_data.csv")
+```
+
+## PREDICTIONS
+
+```{r}
+# Coefficients obtained from the SAR model
+coefficients <- c(
+  Intercept = 9320242.5,
+  swimming_pool = 4373200.1,
+  bedrooms = 4292530.3,
+  borehole = -1088260.9,
+  staff_quarters = 6081957.9,
+  bathrooms = 851842.1,
+  house_type_encoded = -1115998.2,
+  size = 32484.1,
+  area_type_encoded = -4479697.8
+)
+
+# Independent variables used in the model
+independent_variables <- c(
+  "swimming_pool", "bedrooms", "borehole", "staff_quarters",
+  "bathrooms", "house_type_encoded", "size", "area_type_encoded"
+)
+
+# Calculate predicted prices using the coefficients and independent variables
+predicted_prices <- rowSums(house_df[, independent_variables] * coefficients[-1]) + coefficients["Intercept"]
+
+# Add predicted prices to the dataframe
+house_df$predicted_price_SAR <- predicted_prices
+
+# View the updated dataframe
+head(house_df)
+```
+
+
+```{r}
+# Read shapefile data
+shapefile_data <- st_read("metropolly.shp")
+
+
+# Plotting
+ggplot() +
+  geom_sf(data = shapefile_data, color = 'black', size = 1) +
+  geom_point(data = house_df, aes(x = longitude, y = latitude, color = predicted_price_SAR), size = 2) +
+  theme_minimal() +
+  ggtitle('') +
+  scale_color_gradient(low = "blue", high = "red", name = "House Price(Ksh)") # Adjust color scale as needed
+
+```
+
+
+```{r}
+## GWR Model
+
+## Median coefficients from the GWR model summary
+median_coefficients <- c(
+  Intercept = 636993.4,
+  swimming_pool = 2509406.8,
+  bedrooms = 2146628.0,
+  borehole = 2095289.3,
+  staff_quarters = 961726.2,
+  bathrooms = 249632.5,
+  house_type_encoded = 2407044.2,
+  size = 53859.4,
+  area_type_encoded = -903264.4
+)
+
+# Calculate GWR predicted price
+house_df$gwr_predicted_price <- median_coefficients["Intercept"] +
+  median_coefficients["swimming_pool"] * house_df$swimming_pool +
+  median_coefficients["bedrooms"] * house_df$bedrooms +
+  median_coefficients["borehole"] * house_df$borehole +
+  median_coefficients["staff_quarters"] * house_df$staff_quarters +
+  median_coefficients["bathrooms"] * house_df$bathrooms +
+  median_coefficients["house_type_encoded"] * house_df$house_type_encoded +
+  median_coefficients["size"] * house_df$size +
+  median_coefficients["area_type_encoded"] * house_df$area_type_encoded
+
+head(house_df)
+```
+
+```{r}
+# Plotting
+ggplot() +
+  geom_sf(data = shapefile_data, color = 'black', size = 1) +
+  geom_point(data = house_df, aes(x = longitude, y = latitude, color = gwr_predicted_price), size = 2) +
+  theme_minimal() +
+  ggtitle('') +
+  scale_color_gradient(low = "blue", high = "red", name = "House Price(Ksh)") 
+```
+
+
+```{r}
+# Ensure the test dataset has the correct predictor variables
+test_data <- test_data[, c("bedrooms", "bathrooms", "size", "swimming_pool", 
+                           "borehole", "staff_quarters", "house_type_encoded", 
+                           "area_type_encoded"), drop = FALSE]
+
+# Predict house prices using the trained Random Forest model
+predictions <- predict(modell, newdata = test_data)
+
+# View the first few predictions
+head(predictions)
+
+```
+
+
+
+
+`
+
+
+
+
+
